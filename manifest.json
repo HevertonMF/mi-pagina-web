@@ -1,0 +1,17 @@
+{
+  "name": "Escorpión: cazador del desierto",
+  "short_name": "Escorpión",
+  "description": "Juego de un escorpión procedural: caza insectos y pica a los lagartos.",
+  "lang": "es",
+  "start_url": "juego.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#1a120a",
+  "theme_color": "#3d2a7a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
