@@ -1,6 +1,6 @@
 // Service worker: guarda el juego en el móvil para que funcione sin internet.
 // Responde con lo guardado y, a la vez, descarga la versión nueva para la próxima vez.
-const CACHE = "escorpion-v1";
+const CACHE = "escorpion-v2";
 const FILES = ["./", "index.html", "juego.html", "escorpion.js", "manifest.json", "icon-192.png", "icon-512.png", "heverton.png"];
 
 self.addEventListener("install", (e) => {

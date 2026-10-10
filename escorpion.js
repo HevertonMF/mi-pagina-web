@@ -873,39 +873,67 @@
 
   const LAGARTO = { cuerpo: [110, 150, 70], pata: [96, 136, 60], mancha: [58, 88, 40], claro: [196, 210, 140] };
 
-  // Pata de lagarto: en vez de decidir sola, sigue un "reloj" de marcha (phase) compartido.
-  // Las patas en diagonal (pair 0 / pair 1) se alternan: mientras un par avanza, el otro apoya.
+  // Pata de lagarto: sigue un "reloj" de marcha (phase) compartido. Las patas en diagonal
+  // (pair 0 / pair 1) se alternan. El pie pasa más tiempo apoyado que en el aire, y el paso
+  // es más largo cuanto más rápido va. El codo apunta hacia atrás y la rodilla hacia delante.
   class LizardLeg extends LegSystem {
-    constructor(end, creature, side, tilt, reach, stride, pair) {
-      super(end, 2, 6, creature, side, tilt, reach, stride * 0.6, pair);
-      this.stride = stride;
+    constructor(end, creature, side, tilt, reach, pair, front) {
+      super(end, 2, 6, creature, side, tilt, reach, 10, pair);
       this.pair = pair;
+      this.front = front;
       this.swinging = false;
+      this.liftZ = 0;
     }
 
-    gait(phase, moving) {
+    get lift() {
+      return this.liftZ;
+    }
+
+    // IK de 2 huesos eligiendo hacia dónde dobla: codo atrás (delanteras), rodilla delante (traseras)
+    solveIK(fx, fy) {
+      const h = this.hip, l1 = this.thigh.size, l2 = this.shin.size;
+      const dx = fx - h.x, dy = fy - h.y;
+      const d = clamp(Math.hypot(dx, dy), Math.abs(l1 - l2) + 0.01, l1 + l2 - 0.01);
+      const base = Math.atan2(dy, dx);
+      const a = Math.acos(clamp((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d), -1, 1));
+      const back = h.absAngle; // las placas del cuerpo apuntan hacia atrás
+      const kneeBack = (sign) => Math.cos(base + sign * a - back);
+      let sign = kneeBack(1) > kneeBack(-1) ? 1 : -1;
+      if (!this.front) sign = -sign;
+      const thighAbs = base + sign * a;
+      const kx = h.x + l1 * Math.cos(thighAbs), ky = h.y + l1 * Math.sin(thighAbs);
+      const shinAbs = Math.atan2(fy - ky, fx - kx);
+      this.thigh.angle = thighAbs - h.absAngle;
+      this.shin.angle = shinAbs - thighAbs;
+      this.thigh.updateRelative(false, true);
+      this.shin.updateRelative(false, true);
+    }
+
+    gait(phase, moving, stride, swingFrac) {
       if (!moving) {
-        // parado: recoloca la pata con calma si quedó mal puesta
-        super.update();
+        this.liftZ = 0;
+        super.update(); // parado: recoloca la pata con calma si quedó mal puesta
         return;
       }
       const p = (phase + this.pair * 0.5) % 1;
-      const swing = p < 0.5;
+      const swing = p < swingFrac;
       if (swing) {
         if (!this.swinging) {
           this.startX = this.footX;
           this.startY = this.footY;
         }
-        // la pata va a la posición ideal adelantada medio paso
         const [ix, iy] = this.ideal();
         const fwd = this.hip.absAngle + Math.PI;
-        this.goalX = ix + Math.cos(fwd) * this.stride * 0.5;
-        this.goalY = iy + Math.sin(fwd) * this.stride * 0.5;
-        this.progress = p / 0.5;
-        const e = ease(this.progress);
+        this.goalX = ix + Math.cos(fwd) * stride * 0.5;
+        this.goalY = iy + Math.sin(fwd) * stride * 0.5;
+        const k = p / swingFrac;
+        const e = ease(k);
         this.footX = this.startX + (this.goalX - this.startX) * e;
         this.footY = this.startY + (this.goalY - this.startY) * e;
+        this.liftZ = Math.sin(Math.PI * k) * 5;
+        this.progress = k;
       } else {
+        this.liftZ = 0;
         this.progress = 1;
       }
       this.swinging = swing;
@@ -934,12 +962,13 @@
       }
       // hombros en body[0] y caderas en body[3]; codos hacia atrás, rodillas hacia delante
       this.legs = [];
-      [[0, 0.35, -0.9], [3, -0.25, 0.9]].forEach(([b, tilt, knee], i) => {
+      // [placa, inclinación, muslo, pierna, alcance]: las traseras son más largas
+      [[0, 0.3, 12, 11, 17], [3, -0.2, 15, 15, 22]].forEach(([b, tilt, l1, l2, reach], i) => {
         for (const side of [-1, 1]) {
-          const thigh = new Segment(this.body[b], 14, side * (Math.PI / 2 + tilt));
-          const shin = new Segment(thigh, 13, side * knee);
+          const thigh = new Segment(this.body[b], l1, side * (Math.PI / 2 + tilt));
+          const shin = new Segment(thigh, l2, side * (i === 0 ? -0.9 : 0.9));
           const pair = (i + (side > 0 ? 1 : 0)) % 2;
-          this.legs.push(new LizardLeg(shin, this.head, side, tilt, 20, 22, pair));
+          this.legs.push(new LizardLeg(shin, this.head, side, tilt, reach, pair, i === 0));
         }
       });
       this.phase = 0;
@@ -984,9 +1013,12 @@
       h.x += Math.cos(h.absAngle) * h.speed;
       h.y += Math.sin(h.absAngle) * h.speed;
 
-      // reloj de la marcha: una vuelta completa cada 22 px recorridos
+      // reloj de la marcha: el paso es más largo cuanto más rápido va; despacio el pie
+      // pasa más tiempo apoyado (35 % en el aire), corriendo casi la mitad
       const moving = h.speed > 0.25;
-      this.phase = (this.phase + h.speed / 22) % 1;
+      const stride = clamp(12 + h.speed * 6, 12, 26);
+      const swingFrac = clamp(0.32 + h.speed * 0.06, 0.32, 0.48);
+      this.phase = (this.phase + h.speed / stride) % 1;
 
       // ondulación en S del cuerpo y la cola, sincronizada con las patas
       const amp = 0.4 * Math.min(1, h.speed / 1.6);
@@ -1000,7 +1032,7 @@
         seg.baseAngle = amp * 0.35 * Math.sin(w - (i + 5) * 1.1) + 0.04 * Math.sin(this.idle * 2 - i * 0.6);
         seg.follow();
       });
-      for (const leg of this.legs) leg.gait(this.phase, moving);
+      for (const leg of this.legs) leg.gait(this.phase, moving, stride, swingFrac);
 
       if (this.hurt > 0) this.hurt -= dt;
       if (this.tongue > 0) this.tongue -= dt;
@@ -1024,15 +1056,24 @@
       const h = this.head, d = h.absAngle;
       const ca = Math.cos(d), sa = Math.sin(d), px = -sa, py = ca;
 
-      // patas con cinco dedos
+      // patas: el pie se levanta al dar el paso (su sombra se separa) y los dedos miran
+      // hacia delante en las patas delanteras y hacia fuera y atrás en las traseras
       for (const leg of this.legs) {
-        const k = leg.thigh, f = leg.shin;
-        shadedRibbon(g, [[leg.hip.x, leg.hip.y], [k.x, k.y], [f.x, f.y]], [3.4, 2.4, 1.3], pata);
-        for (let i = 0; i < 5; i++) {
-          const a = f.absAngle + (i - 2) * 0.42;
-          const tx = f.x + 5.5 * Math.cos(a), ty = f.y + 5.5 * Math.sin(a);
-          line(g, shadowPass ? pata : darken(pata, 0.35), [f.x, f.y], [tx, ty], 1.1);
-        }
+        const k = leg.thigh, f = leg.shin, z = leg.lift;
+        const pts = [sp(leg.hip.x, leg.hip.y, 0), sp(k.x, k.y, 3 + z * 0.5), sp(f.x, f.y, z)];
+        const big = leg.front ? 1 : 1.25;
+        shadedRibbon(g, pts, [3.6 * big, 2.5 * big, 1.6 * big], pata);
+        const fwd = leg.hip.absAngle + Math.PI;
+        const toeDir = fwd - leg.side * (leg.front ? 0.55 : 1.9); // hacia fuera del cuerpo
+        const toes = leg.front ? [4, 5, 5.5, 5, 3.5] : [4, 5.5, 7, 8.5, 5];
+        const [fx, fy] = pts[2];
+        if (!shadowPass) oval(g, darken(pata, 0.15), fx, fy, toeDir, 2.6 * big, 2 * big);
+        toes.forEach((len, i) => {
+          const a = toeDir + (i - 2) * 0.38 * leg.side;
+          const tx = fx + len * Math.cos(a), ty = fy + len * Math.sin(a);
+          line(g, shadowPass ? pata : darken(pata, 0.3), [fx, fy], [tx, ty], 1.1);
+          if (!shadowPass) circle(g, darken(pata, 0.4), tx, ty, 0.7);
+        });
       }
 
       // lengua bífida cuando la saca
